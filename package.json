@@ -1,0 +1,12 @@
+{
+  "name": "flat-db",
+  "version": "1.0.0",
+  "description": "A lightweight flat database library for JavaScript",
+  "main": "src/flatdb.js",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": ["database", "flat", "json", "storage"],
+  "author": "",
+  "license": "MIT"
+}
