@@ -1,12 +1,38 @@
 {
-  "name": "flat-db",
-  "version": "1.0.0",
-  "description": "A lightweight flat database library for JavaScript",
+  "name": "flatdb-lite",
+  "version": "1.0.1",
+  "description": "A powerful and lightweight flat database library for JavaScript with schema validation, indexing, and advanced querying",
   "main": "src/flatdb.js",
   "scripts": {
-    "test": "node test/test.js"
+    "test": "mocha test/**/*.js",
+    "test:binary": "mocha test/binary_test.js",
+    "test:large": "mocha test/large_scale_test.js"
   },
-  "keywords": ["database", "flat", "json", "storage"],
-  "author": "",
-  "license": "MIT"
+  "keywords": [
+    "database",
+    "flat",
+    "json",
+    "storage",
+    "schema",
+    "validation",
+    "indexing",
+    "query",
+    "nosql"
+  ],
+  "author": "Robert Kinser",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/icakinser/FlatDB"
+  },
+  "bugs": {
+    "url": "https://github.com/icakinser/FlatDB/issues"
+  },
+  "homepage": "https://github.com/icakinser/FlatDB#readme",
+  "engines": {
+    "node": ">=12.0.0"
+  },
+  "devDependencies": {
+    "mocha": "^10.2.0"
+  }
 }

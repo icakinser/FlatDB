@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 class Schema {
     constructor(definition) {
@@ -21,7 +22,15 @@ class Schema {
             }
 
             // Type check
-            if (rules.type && typeof data[field] !== rules.type) {
+            if (rules.type === 'binary') {
+                if (!(data[field] instanceof Buffer)) {
+                    errors.push(`Field '${field}' must be a Buffer`);
+                }
+                // Check max size if specified
+                if (rules.maxSize && data[field].length > rules.maxSize) {
+                    errors.push(`Binary field '${field}' exceeds maximum size of ${rules.maxSize} bytes`);
+                }
+            } else if (rules.type && typeof data[field] !== rules.type) {
                 errors.push(`Field '${field}' must be of type ${rules.type}`);
             }
 
@@ -68,10 +77,11 @@ class Table {
         this.name = name;
         this.db = db;
         this.schema = schema instanceof Schema ? schema : null;
+        this.binaryDir = path.join(path.dirname(db.dbPath), `${name}_binary`);
         this._ensureTableExists();
     }
 
-    _ensureTableExists() {
+    async _ensureTableExists() {
         if (!this.db.data.tables) {
             this.db.data.tables = {};
         }
@@ -79,14 +89,88 @@ class Table {
             this.db.data.tables[this.name] = {
                 records: [],
                 indexes: {},
-                foreignKeys: {}
+                foreignKeys: {},
+                binaryFields: {}
             };
+        }
+        // Create binary storage directory if needed
+        try {
+            await fs.mkdir(this.binaryDir, { recursive: true });
+        } catch (err) {
+            if (err.code !== 'EEXIST') {
+                throw err;
+            }
         }
     }
 
     _validateData(data) {
         if (!this.schema) return [];
         return this.schema.validate(data);
+    }
+
+    async _storeBinaryData(data) {
+        const processedData = { ...data };
+        const binaryFields = {};
+
+        if (this.schema) {
+            for (const [field, rules] of Object.entries(this.schema.definition)) {
+                if (rules.type === 'binary' && data[field]) {
+                    const hash = crypto.createHash('sha256').update(data[field]).digest('hex');
+                    const filename = `${hash}.bin`;
+                    const filepath = path.join(this.binaryDir, filename);
+                    
+                    // Store metadata for searching
+                    const metadata = {
+                        size: data[field].length,
+                        hash,
+                        mimeType: this._detectMimeType(data[field])
+                    };
+                    
+                    await fs.writeFile(filepath, data[field]);
+                    
+                    binaryFields[field] = hash;
+                    processedData[field] = `binary:${hash}`;
+                    processedData[`${field}_metadata`] = metadata;
+                }
+            }
+        }
+
+        return { processedData, binaryFields };
+    }
+
+    _detectMimeType(buffer) {
+        // Simple mime type detection based on magic numbers
+        if (buffer.length < 4) return 'application/octet-stream';
+        
+        const header = buffer.slice(0, 4);
+        
+        if (header[0] === 0xFF && header[1] === 0xD8) return 'image/jpeg';
+        if (header[0] === 0x89 && header[1] === 0x50) return 'image/png';
+        if (header[0] === 0x47 && header[1] === 0x49) return 'image/gif';
+        if (header[0] === 0x25 && header[1] === 0x50) return 'application/pdf';
+        
+        return 'application/octet-stream';
+    }
+
+    async _retrieveBinaryData(record) {
+        const result = { ...record };
+
+        if (this.schema) {
+            for (const [field, rules] of Object.entries(this.schema.definition)) {
+                if (rules.type === 'binary' && record[field]) {
+                    const hash = record[field].replace('binary:', '');
+                    const filepath = path.join(this.binaryDir, `${hash}.bin`);
+                    try {
+                        result[field] = await fs.readFile(filepath);
+                    } catch (error) {
+                        console.warn(`Binary data not found for field ${field}`);
+                        result[field] = null;
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     async createIndex(field) {
@@ -114,20 +198,11 @@ class Table {
             throw new Error(`Validation failed: ${errors.join(', ')}`);
         }
 
-        // Check foreign key constraints
+        const { processedData, binaryFields } = await this._storeBinaryData(data);
         const table = this.db.data.tables[this.name];
-        for (const [field, reference] of Object.entries(table.foreignKeys)) {
-            if (data[field]) {
-                const refTable = this.db.table(reference.table);
-                const exists = await refTable.findOne({ [reference.field]: data[field] });
-                if (!exists) {
-                    throw new Error(`Foreign key constraint failed: ${field} references ${reference.table}.${reference.field}`);
-                }
-            }
-        }
-
+        
         const id = Date.now().toString(36) + Math.random().toString(36).substr(2);
-        const record = { _id: id, ...data, createdAt: new Date().toISOString() };
+        const record = { _id: id, ...processedData, createdAt: new Date().toISOString() };
         
         table.records.push(record);
         
@@ -171,8 +246,9 @@ class Table {
 
         // Insert all documents
         for (const data of documents) {
+            const { processedData, binaryFields } = await this._storeBinaryData(data);
             const id = Date.now().toString(36) + Math.random().toString(36).substr(2);
-            const record = { _id: id, ...data, createdAt: new Date().toISOString() };
+            const record = { _id: id, ...processedData, createdAt: new Date().toISOString() };
             table.records.push(record);
             records.push(record);
 
@@ -207,6 +283,13 @@ class Table {
     async findOne(query = {}) {
         const results = await this.find(query);
         return results[0] || null;
+    }
+
+    async findById(id) {
+        const table = this.db.data.tables[this.name];
+        const record = table.records.find(r => r._id === id);
+        if (!record) return null;
+        return this._retrieveBinaryData(record);
     }
 
     async update(query, update) {
@@ -354,12 +437,96 @@ class Table {
             return record[key] === value;
         });
     }
+
+    async searchBinary(query) {
+        const table = this.db.data.tables[this.name];
+        const results = [];
+
+        // Helper function to check if buffer contains pattern
+        const bufferContains = async (filepath, pattern) => {
+            const buffer = await fs.readFile(filepath);
+            if (Buffer.isBuffer(pattern)) {
+                return buffer.includes(pattern);
+            }
+            return buffer.toString().includes(pattern);
+        };
+
+        for (const record of table.records) {
+            let matches = false;
+
+            // Search through binary fields
+            if (this.schema) {
+                for (const [field, rules] of Object.entries(this.schema.definition)) {
+                    if (rules.type === 'binary' && record[field]) {
+                        const hash = record[field].replace('binary:', '');
+                        const filepath = path.join(this.binaryDir, `${hash}.bin`);
+                        const metadata = record[`${field}_metadata`] || {};
+
+                        // Match by metadata
+                        if (query.size && metadata.size === query.size) matches = true;
+                        if (query.mimeType && metadata.mimeType === query.mimeType) matches = true;
+                        if (query.minSize && metadata.size >= query.minSize) matches = true;
+                        if (query.maxSize && metadata.size <= query.maxSize) matches = true;
+
+                        // Match by content if pattern provided
+                        if (query.pattern && await bufferContains(filepath, query.pattern)) {
+                            matches = true;
+                        }
+                    }
+                }
+            }
+
+            if (matches) {
+                results.push(await this._retrieveBinaryData(record));
+            }
+        }
+
+        return results;
+    }
+
+    async findSimilarBinary(field, buffer, options = {}) {
+        const table = this.db.data.tables[this.name];
+        const results = [];
+        
+        if (!this.schema?.definition[field]?.type === 'binary') {
+            throw new Error(`Field '${field}' is not a binary field`);
+        }
+
+        const sourceHash = crypto.createHash('sha256').update(buffer).digest('hex');
+
+        for (const record of table.records) {
+            if (record[field]) {
+                const hash = record[field].replace('binary:', '');
+                
+                // Exact match by hash
+                if (hash === sourceHash) {
+                    results.push(await this._retrieveBinaryData(record));
+                    continue;
+                }
+
+                // Size similarity check if specified
+                if (options.sizeTolerance) {
+                    const metadata = record[`${field}_metadata`];
+                    const sizeDiff = Math.abs(metadata.size - buffer.length);
+                    if (sizeDiff <= options.sizeTolerance) {
+                        results.push(await this._retrieveBinaryData(record));
+                    }
+                }
+            }
+        }
+
+        return results;
+    }
 }
 
 class FlatDB {
-    constructor(dbPath) {
+    constructor(dbPath, options = {}) {
         this.dbPath = dbPath;
         this.data = null;
+        this.options = {
+            maxBinarySize: options.maxBinarySize || 10 * 1024 * 1024, // Default 10MB
+            ...options
+        };
     }
 
     async connect() {
@@ -380,8 +547,18 @@ class FlatDB {
         await fs.writeFile(this.dbPath, JSON.stringify(this.data, null, 2));
     }
 
-    table(name, schema = null) {
-        return new Table(name, this, schema);
+    async table(name, schema = null) {
+        // If schema has binary fields without maxSize, apply global limit
+        if (schema && schema.definition) {
+            for (const [field, rules] of Object.entries(schema.definition)) {
+                if (rules.type === 'binary' && !rules.maxSize) {
+                    rules.maxSize = this.options.maxBinarySize;
+                }
+            }
+        }
+        const table = new Table(name, this, schema);
+        await table._ensureTableExists();
+        return table;
     }
 }
 

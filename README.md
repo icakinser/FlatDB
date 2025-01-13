@@ -1,10 +1,11 @@
 # FlatDB
 
-A powerful and lightweight flat database library for JavaScript that stores data in JSON format. Perfect for small to medium-sized projects, prototypes, and applications requiring a simple yet feature-rich database solution.
+A powerful and lightweight flat database library for JavaScript that stores data in JSON format with advanced binary storage capabilities. Perfect for small to medium-sized projects, prototypes, and applications requiring a simple yet feature-rich database solution.
 
 ## Features
 
 - **Tables with Schema Validation**: Define table schemas with field types, required fields, and constraints
+- **Advanced Binary Storage**: Store, search, and manage binary data with powerful querying capabilities
 - **Indexing**: Create indexes on fields for faster query performance
 - **Foreign Key Constraints**: Maintain data integrity with foreign key relationships
 - **Bulk Operations**: Efficient batch inserts, updates, and deletes
@@ -12,7 +13,7 @@ A powerful and lightweight flat database library for JavaScript that stores data
 - **Aggregation Pipeline**: MongoDB-like aggregation operations
 - **Asynchronous API**: Full async/await support
 - **No External Dependencies**: Pure JavaScript implementation
-- **Persistent JSON Storage**: Durable storage with automatic saving
+- **Persistent Storage**: Durable storage with automatic saving
 - **Performance Logging**: Built-in performance monitoring and statistics
 
 ## Installation
@@ -154,47 +155,170 @@ const stats = await products.aggregate([
 ]);
 ```
 
-### Performance Monitoring
+### Binary Data Storage
+
+FlatDB provides a comprehensive binary data storage system with advanced search and management capabilities.
+
+### Configuration
+
+When creating a new database instance, you can configure global binary storage options:
 
 ```javascript
-// Get database statistics
-const stats = await db.getStats();
-console.log(stats);
-// {
-//     recordsPerTable: { users: 1000, products: 500, orders: 2000 },
-//     totalRecords: 3500,
-//     fileSize: '2.5 MB',
-//     indexes: { users: ['email'], products: ['category', 'price'] }
-// }
-
-// Monitor query performance
-const startTime = Date.now();
-const results = await products.find({ category: 'electronics' });
-console.log(`Query took ${Date.now() - startTime}ms`);
+const db = new FlatDB('mydb.json', {
+  maxBinarySize: 5 * 1024 * 1024 // 5MB global limit for binary fields
+});
 ```
 
-## API Reference
+Available options:
+- `maxBinarySize`: Maximum size in bytes for binary fields (default: 10MB)
 
-### FlatDB Class
-- `constructor(dbPath)`: Creates a new database instance
-- `connect()`: Connects to the database file
-- `createTable(name, schema)`: Creates a new table with the specified schema
-- `getTable(name)`: Gets an existing table
-- `dropTable(name)`: Deletes a table
-- `getStats()`: Returns database statistics
+### Basic Usage
 
-### Table Class
-- `insert(document)`: Inserts a single document
-- `insertMany(documents)`: Inserts multiple documents
-- `find(query)`: Finds all documents matching the query
-- `findOne(query)`: Finds first document matching the query
-- `update(query, update)`: Updates documents matching the query
-- `updateOne(query, update)`: Updates first document matching the query
-- `delete(query)`: Deletes documents matching the query
-- `deleteOne(query)`: Deletes first document matching the query
-- `aggregate(pipeline)`: Performs aggregation operations
-- `count(query)`: Returns count of documents matching the query
-- `createIndex(field)`: Creates an index on the specified field
+```javascript
+// Define a schema with binary fields
+const schema = new Schema({
+  name: { type: 'string', required: true },
+  thumbnail: { type: 'binary' },                    // Uses global size limit
+  image: { type: 'binary', maxSize: 10 * 1024 * 1024 } // Field-specific limit
+});
+
+// Create a table
+const images = await db.table('images', schema);
+
+// Store binary data
+const imageBuffer = await fs.readFile('image.jpg');
+await images.insert({
+  name: 'profile.jpg',
+  image: imageBuffer
+});
+
+// Retrieve binary data
+const record = await images.findById(1);
+await fs.writeFile('retrieved.jpg', record.image);
+```
+
+### Binary Search Features
+
+FlatDB offers multiple ways to search and find binary data:
+
+#### 1. Metadata Search
+
+```javascript
+// Search by MIME type
+const jpegImages = await table.searchBinary({
+  mimeType: 'image/jpeg'
+});
+
+// Search by size range
+const mediumImages = await table.searchBinary({
+  minSize: 100 * 1024,    // Min 100KB
+  maxSize: 1024 * 1024    // Max 1MB
+});
+
+// Combine multiple criteria
+const largeJpegs = await table.searchBinary({
+  mimeType: 'image/jpeg',
+  minSize: 1024 * 1024    // Min 1MB
+});
+```
+
+#### 2. Content Search
+
+```javascript
+// Search text content
+const documents = await table.searchBinary({
+  pattern: 'confidential'  // Find files containing this text
+});
+
+// Search binary patterns
+const pngImages = await table.searchBinary({
+  pattern: Buffer.from([0x89, 0x50, 0x4E, 0x47])  // PNG header
+});
+
+// Search with size constraints
+const smallTextFiles = await table.searchBinary({
+  pattern: 'Hello',
+  maxSize: 1024  // Max 1KB
+});
+```
+
+#### 3. Similarity Search
+
+```javascript
+// Find similar images
+const sourceImage = await fs.readFile('source.jpg');
+const similar = await table.findSimilarBinary('image', sourceImage, {
+  sizeTolerance: 1024  // Allow 1KB difference
+});
+
+// Find exact duplicates
+const duplicates = await table.findSimilarBinary('document', sourceBuffer, {
+  sizeTolerance: 0  // Exact size match
+});
+```
+
+### Advanced Features
+
+#### Automatic MIME Type Detection
+
+FlatDB automatically detects and stores MIME types for common file formats:
+- JPEG images (`image/jpeg`)
+- PNG images (`image/png`)
+- GIF images (`image/gif`)
+- PDF documents (`application/pdf`)
+- Other binary data (`application/octet-stream`)
+
+```javascript
+// Get files by MIME type
+const images = await table.searchBinary({
+  mimeType: 'image/jpeg'
+});
+
+console.log(`Found ${images.length} JPEG images`);
+```
+
+#### Deduplication
+
+Binary data is automatically deduplicated using content hashing:
+
+```javascript
+// Store the same image twice
+await images.insert({ name: 'photo1.jpg', image: imageBuffer });
+await images.insert({ name: 'photo2.jpg', image: imageBuffer });
+
+// Only one copy is stored on disk, saving space
+```
+
+#### Binary Data Management
+
+```javascript
+// Get binary metadata
+const record = await images.findById(1);
+const metadata = record.image_metadata;
+console.log(`Size: ${metadata.size} bytes`);
+console.log(`Type: ${metadata.mimeType}`);
+console.log(`Hash: ${metadata.hash}`);
+
+// Clean up unused binary data
+await db.cleanupBinaryStorage();  // Removes orphaned binary files
+```
+
+### Best Practices
+
+1. **Size Limits**:
+   - Set appropriate global size limits when creating the database
+   - Override limits for specific fields when needed
+   - Consider your application's memory constraints
+
+2. **Search Optimization**:
+   - Use metadata search when possible (faster than content search)
+   - Combine search criteria to narrow results
+   - Use appropriate size tolerances for similarity search
+
+3. **Error Handling**:
+   - Always handle potential errors when dealing with binary data
+   - Check file sizes before insertion
+   - Verify MIME types if format is important
 
 ## Performance
 
@@ -208,15 +332,6 @@ Based on performance tests with 25 tables and 10,000 records:
 - Single Updates: ~70ms
 - Bulk Updates: ~1.5s
 - Aggregations: ~3ms
-
-## Testing
-
-Run the test suite:
-
-```bash
-node test/test.js           # Basic functionality tests
-node test/large_scale_test.js  # Performance tests
-```
 
 ## Limitations
 
